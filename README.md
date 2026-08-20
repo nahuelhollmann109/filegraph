@@ -1,6 +1,18 @@
-# FileGraph — MCP Directory Scanner
+# filegraph
 
-Servidor MCP en Python 3.12 que escanea directorios y devuelve la jerarquía de archivos/carpetas para reorganización.
+Servidor MCP en Python 3.12 que escanea directorios y analiza la estructura de archivos para reorganización, limpieza y detección de patrones.
+
+## Qué resuelve
+
+Cuando trabajás con colecciones de archivos (logos, fotos, documentos, assets), necesitás responder preguntas como:
+
+- **¿Qué hay en esta carpeta?** → `scan_directory` te da el árbol completo
+- **¿Cuántos archivos .svg tengo?** → `search_by_type` filtra por extensión
+- **¿Tengo archivos duplicados?** → `find_duplicates` los agrupa por hash
+- **¿Hay patrones en los nombres?** → `find_patterns` detecta secuencias, prefijos y sufijos
+- **¿Cuánto pesa cada archivo?** → `get_file_metadata` te da tamaño, permisos y fechas
+
+filegraph se integra directamente con MCP (Model Context Protocol) para que agentes de IA puedan explorar y analizar directorios de forma autónoma, sin necesidad de navegar el sistema de archivos manualmente.
 
 ## Instalación
 
@@ -31,87 +43,7 @@ bash ~/.local/share/filegraph/install.sh uninstall
 ./scripts/setup-mcp.sh uninstall
 ```
 
-## Uso
-
-### Comando CLI
-
-El proyecto incluye un comando `filegraph` que se instala automáticamente:
-
-```bash
-# Instalar el comando
-pip install -e ".[dev]"
-
-# Ver ayuda
-filegraph --help
-filegraph scan --help
-filegraph find-duplicates --help
-filegraph search --help
-filegraph find-patterns --help
-```
-
-#### Comandos disponibles
-
-- **`filegraph scan <directorio>`**: Escanea un directorio y muestra su estructura
-  - `--format json|tree`: Formato de salida (por defecto: tree)
-  - `--no-exclude`: Incluir directorios excluidos por defecto
-  - `--depth N`: Profundidad máxima de escaneo
-
-- **`filegraph find-duplicates <directorio>`**: Encuentra archivos duplicados por hash
-  - `--format json|tree`: Formato de salida (por defecto: tree)
-  - `--algo SHA256|MD5`: Algoritmo de hash (por defecto: sha256)
-  - `--min-size N`: Tamaño mínimo en bytes para considerar
-
-- **`filegraph search <directorio> <extensión>`**: Busca archivos por extensión
-  - `--format json|tree`: Formato de salida (por defecto: tree)
-  - `--no-exclude`: Incluir directorios excluidos
-
-- **`filegraph find-patterns <directorio>`**: Detecta patrones en nombres de archivo
-  - `--format json|tree`: Formato de salida (por defecto: tree)
-  - `--strategy auto|prefix|suffix|sequence|date`: Estrategia de detección
-  - `--min-group N`: Tamaño mínimo de grupo (por defecto: 3)
-
-#### Exclusiones por defecto
-
-Los siguientes directorios se excluyen automáticamente:
-- `.git` — repositorios git
-- `node_modules` — dependencias Node.js
-- `__pycache__` — archivos compilados Python
-- `.venv` — entornos virtuales Python
-
-Para incluir estos directorios, usa `--no-exclude`.
-
-#### Ejemplos
-
-```bash
-# Escaneo en formato JSON
-filegraph scan /ruta/a/proyecto --format json
-
-# Escaneo en formato árbol con profundidad limitada
-filegraph scan /ruta/a/proyecto --format tree --depth 3
-
-# Buscar duplicados excluyendo directorios por defecto
-filegraph find-duplicates /ruta/a/proyecto
-
-# Buscar duplicados con hash MD5 y tamaño mínimo
-filegraph find-duplicates /ruta/a/proyecto --algo md5 --min-size 1000
-
-# Buscar archivos .jpg sin exclusiones
-filegraph search /ruta/a/proyecto jpg --no-exclude
-
-# Detectar patrones con estrategia automática
-filegraph find-patterns /ruta/a/proyecto
-
-# Detectar solo secuencias con grupo mínimo de 5
-filegraph find-patterns /ruta/a/proyecto --strategy sequence --min-group 5
-```
-
-### Ejecutar el server MCP
-
-```bash
-python -m src.main
-```
-
-### Configurar en un cliente MCP
+## Configurar en un cliente MCP
 
 Agregar esta configuración a tu cliente MCP (OpenCode, Claude Desktop, etc.):
 
@@ -127,7 +59,7 @@ Agregar esta configuración a tu cliente MCP (OpenCode, Claude Desktop, etc.):
 }
 ```
 
-## Tools disponibles
+## Tools de escaneo
 
 ### `scan_directory`
 
@@ -136,24 +68,20 @@ Escanea un directorio y devuelve su jerarquía como árbol JSON.
 | Parámetro | Tipo | Requerido | Descripción |
 |-----------|------|-----------|-------------|
 | `path` | str | ✅ | Ruta del directorio a escanear |
-| `max_depth` | int | ❌ | Profundidad máxima de traverse (None = sin límite) |
+| `max_depth` | int | ❌ | Profundidad máxima (None = sin límite) |
 | `exclude_dirs` | list[str] | ❌ | Directorios a excluir |
 | `include_excluded` | bool | ❌ | Incluir directorios excluidos por defecto |
 
-**Ejemplo de respuesta:**
+**Ejemplo:**
 
 ```json
 {
   "tree": {
     "type": "directory",
-    "name": "fotos",
+    "name": "Logos-html",
     "children": [
-      {
-        "type": "file",
-        "name": "vacation.jpg",
-        "path": "/home/user/fotos/vacation.jpg",
-        "size": 2456789
-      }
+      {"type": "file", "name": "logo.svg", "size": 68936},
+      {"type": "file", "name": "icon.png", "size": 47672}
     ]
   },
   "warnings": []
@@ -171,31 +99,27 @@ Busca archivos por extensión bajo una ruta específica.
 | `exclude_dirs` | list[str] | ❌ | Directorios a excluir |
 | `include_excluded` | bool | ❌ | Incluir directorios excluidos por defecto |
 
-**Ejemplo de respuesta:**
+**Ejemplo:**
 
 ```json
 {
   "results": [
-    {
-      "name": "photo.jpg",
-      "path": "/home/user/fotos/photo.jpg",
-      "size": 1234567
-    }
+    {"name": "photo.jpg", "path": "/home/user/fotos/photo.jpg", "size": 1234567}
   ]
 }
 ```
 
 ### `find_duplicates`
 
-Encuentra archivos duplicados agrupados por hash.
+Encuentra archivos duplicados agrupados por hash (SHA256 por defecto).
 
 | Parámetro | Tipo | Requerido | Descripción |
 |-----------|------|-----------|-------------|
 | `path` | str | ✅ | Directorio a analizar |
-| `hash_algo` | str | ❌ | Algoritmo de hash (por defecto: sha256) |
+| `hash_algo` | str | ❌ | Algoritmo: sha256, md5 (default: sha256) |
 | `min_size` | int | ❌ | Tamaño mínimo en bytes |
 
-**Ejemplo de respuesta:**
+**Ejemplo:**
 
 ```json
 {
@@ -214,27 +138,23 @@ Encuentra archivos duplicados agrupados por hash.
 
 ### `find_patterns`
 
-Detecta patrones en nombres de archivo (prefijos, sufijos, secuencias, fechas).
+Detecta patrones en nombres de archivo (secuencias, prefijos, sufijos, fechas).
 
 | Parámetro | Tipo | Requerido | Descripción |
 |-----------|------|-----------|-------------|
 | `path` | str | ✅ | Directorio a analizar |
-| `strategy` | str | ❌ | Estrategia: auto, prefix, suffix, sequence, date |
-| `min_group_size` | int | ❌ | Tamaño mínimo de grupo (por defecto: 3) |
+| `strategy` | str | ❌ | auto, prefix, suffix, sequence, date |
+| `min_group_size` | int | ❌ | Tamaño mínimo de grupo (default: 3) |
 
-**Ejemplo de respuesta:**
+**Ejemplo:**
 
 ```json
 {
   "patterns": [
     {
       "type": "sequence",
-      "pattern": "photo_{number}.jpg",
-      "files": [
-        "/home/user/fotos/photo_001.jpg",
-        "/home/user/fotos/photo_002.jpg",
-        "/home/user/fotos/photo_003.jpg"
-      ]
+      "pattern": "menu{1}",
+      "files": ["menu1.svg", "menu2.svg", "menu3.svg"]
     }
   ]
 }
@@ -248,7 +168,7 @@ Obtiene metadata detallada de un archivo específico.
 |-----------|------|-----------|-------------|
 | `path` | str | ✅ | Ruta del archivo |
 
-**Ejemplo de respuesta:**
+**Ejemplo:**
 
 ```json
 {
@@ -261,14 +181,92 @@ Obtiene metadata detallada de un archivo específico.
 }
 ```
 
+## Tools de caché
+
+filegraph almacena resultados de escaneo en SQLite para que las búsquedas subsiguientes sean instantáneas.
+
+### `index_directory`
+
+Indexa un directorio y cachea sus resultados.
+
+| Parámetro | Tipo | Requerido | Descripción |
+|-----------|------|-----------|-------------|
+| `path` | str | ✅ | Directorio a indexar |
+
+### `sync_cache`
+
+Sincroniza el caché — refresca archivos modificados, agrega nuevos.
+
+| Parámetro | Tipo | Requerido | Descripción |
+|-----------|------|-----------|-------------|
+| `path` | str | ✅ | Directorio a sincronizar |
+
+### `cache_status`
+
+Muestra estadísticas del caché (entradas, archivos totales, tamaño).
+
+| Parámetro | Tipo | Requerido | Descripción |
+|-----------|------|-----------|-------------|
+| `path` | str | ❌ | Directorio a consultar (omitir = global) |
+
+### `unindex_directory`
+
+Elimina un directorio del caché.
+
+| Parámetro | Tipo | Requerido | Descripción |
+|-----------|------|-----------|-------------|
+| `path` | str | ✅ | Directorio a eliminar del caché |
+
 ## Comportamiento
 
 - **Symlinks**: No se siguen por defecto (seguridad)
 - **Permisos**: Si un directorio no tiene permisos de lectura, retorna resultados parciales con warning
 - **Unicode**: Los nombres de archivos Unicode se preservan exactamente
-- **Path requerido**: Todas las tools requieren `path` — cada operación solo trabaja sobre la ruta indicada
 - **Exclusiones por defecto**: `.git`, `node_modules`, `__pycache__`, `.venv` se excluyen automáticamente
 - **Personalización**: Usa `--no-exclude` en CLI o `include_excluded=True` en tools para incluir directorios excluidos
+
+## CLI
+
+El proyecto incluye un comando `filegraph` que se instala automáticamente:
+
+```bash
+# Ver ayuda
+filegraph --help
+
+# Comandos disponibles
+filegraph scan <directorio>                    # Escanea y muestra árbol
+filegraph search <directorio> <extensión>     # Busca por extensión
+filegraph find-duplicates <directorio>        # Encuentra duplicados
+filegraph find-patterns <directorio>          # Detecta patrones
+filegraph index <directorio>                  # Indexa y cachea
+filegraph sync <directorio>                   # Sincroniza caché
+filegraph cache-status [directorio]           # Muestra stats del caché
+```
+
+### Ejemplos CLI
+
+```bash
+# Escaneo en formato JSON
+filegraph scan /ruta/a/proyecto --format json
+
+# Escaneo con profundidad limitada
+filegraph scan /ruta/a/proyecto --format tree --depth 3
+
+# Buscar duplicados con hash MD5 y tamaño mínimo
+filegraph find-duplicates /ruta/a/proyecto --algo md5 --min-size 1000
+
+# Buscar archivos .jpg incluyendo directorios excluidos
+filegraph search /ruta/a/proyecto jpg --no-exclude
+
+# Detectar solo secuencias con grupo mínimo de 5
+filegraph find-patterns /ruta/a/proyecto --strategy sequence --min-group 5
+
+# Indexar un directorio para búsquedas rápidas
+filegraph index /ruta/a/proyecto
+
+# Ver estado del caché
+filegraph cache-status /ruta/a/proyecto
+```
 
 ## Testing
 
@@ -280,18 +278,19 @@ python -m pytest tests/ -v
 
 ```
 filegraph/
-├── pyproject.toml        # Metadata y dependencias
-├── .github/
-│   └── workflows/
-│       └── ci.yml        # GitHub Actions CI
+├── pyproject.toml
+├── .github/workflows/ci.yml
 ├── src/
 │   ├── __init__.py
 │   ├── main.py           # Entry point del server MCP
 │   ├── tools.py          # Definición de las tools MCP
 │   ├── scanner.py        # Lógica core de escaneo
+│   ├── cache.py          # SQLite cache manager
 │   └── cli.py            # Comando CLI filegraph
 └── tests/
     ├── __init__.py
-    ├── test_scanner.py   # Unit tests del scanner
-    └── test_cli.py       # Tests del CLI
+    ├── test_scanner.py
+    ├── test_tools_cache.py
+    ├── test_cli.py
+    └── test_cli_cache.py
 ```

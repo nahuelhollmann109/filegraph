@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from src.cache import get_or_scan
+from src.cache import check_freshness, get_or_scan
 from src.scanner import (
     DEFAULT_EXCLUDED_DIRS,
     _resolve_exclusions,
@@ -14,6 +14,7 @@ from src.scanner import (
     scan_tree,
     search_files,
 )
+from src.store import cache_stats, invalidate_path, list_entries_by_path
 
 
 def scan_directory(
@@ -167,3 +168,116 @@ def find_patterns(
         return {"patterns": results}
 
     return get_or_scan(target, "find_patterns", str(target), _live_scan)
+
+
+# Cache management tools
+
+
+def index_directory(path: str) -> dict:
+    """Index a directory — scan and store results in cache.
+
+    Args:
+        path: Directory to index. REQUIRED.
+
+    Returns:
+        Dict with status and optional error message.
+    """
+    target = Path(path).resolve()
+
+    if not target.exists():
+        return {"status": "error", "error": f"Path not found: {path}"}
+
+    if not target.is_dir():
+        return {"status": "error", "error": f"Expected a directory: {path}"}
+
+    def _live_scan() -> dict:
+        effective_exclude = _resolve_exclusions(None, False)
+        result = scan_tree(target, exclude_dirs=effective_exclude)
+        result["_root_path"] = str(target)
+        return result
+
+    result = get_or_scan(target, "scan_directory", str(target), _live_scan)
+    tree = result.get("tree")
+
+    if tree is None:
+        return {"status": "error", "error": result.get("error", "Scan failed")}
+
+    return {"status": "indexed", "path": str(target)}
+
+
+def sync_cache(path: str) -> dict:
+    """Sync cache — re-scan stale entries for the given path.
+
+    Args:
+        path: Directory to sync. REQUIRED.
+
+    Returns:
+        Dict with refreshed/fresh counts and optional error message.
+    """
+    target = Path(path).resolve()
+
+    if not target.exists():
+        return {"status": "error", "error": f"Path not found: {path}"}
+
+    if not target.is_dir():
+        return {"status": "error", "error": f"Expected a directory: {path}"}
+
+    entries = list_entries_by_path(target, str(target))
+    if not entries:
+        return {"status": "error", "error": f"No cached entries for {path}. Run index first."}
+
+    refreshed = 0
+    fresh = 0
+    for entry in entries:
+        if check_freshness(target, entry["cache_key"]):
+            fresh += 1
+        else:
+            refreshed += 1
+
+    return {"status": "synced", "refreshed": refreshed, "fresh": fresh}
+
+
+def cache_status(path: str | None = None) -> dict:
+    """Show cache statistics.
+
+    Args:
+        path: Optional directory path. If not provided, searches from cwd upward.
+
+    Returns:
+        Dict with entries, total_files, and size_bytes.
+    """
+    if path:
+        target = Path(path).resolve()
+    else:
+        # Walk up from cwd to find nearest .filegraph/cache.db
+        current = Path.cwd()
+        target = None
+        while True:
+            db_path = current / ".filegraph" / "cache.db"
+            if db_path.exists():
+                target = current
+                break
+            parent = current.parent
+            if parent == current:
+                break
+            current = parent
+
+        if target is None:
+            return {"entries": 0, "total_files": 0, "size_bytes": 0}
+
+    stats = cache_stats(target)
+    return stats
+
+
+def unindex_directory(path: str) -> dict:
+    """Remove cache entries for the given path.
+
+    Args:
+        path: Directory to unindex. REQUIRED.
+
+    Returns:
+        Dict with removed count and optional error message.
+    """
+    target = Path(path).resolve()
+    removed = invalidate_path(target, str(target))
+    return {"status": "unindexed", "removed": removed}
