@@ -1,0 +1,10 @@
+# Local AI runtime state
+.atl/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+dist/
+*.egg-info/
+*.egg

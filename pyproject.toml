@@ -1,0 +1,23 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "filegraph"
+version = "0.1.0"
+description = "MCP server for directory scanning and file system inspection"
+requires-python = ">=3.12"
+dependencies = [
+    "fastmcp",
+]
+
+[project.scripts]
+filegraph = "src.cli:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]

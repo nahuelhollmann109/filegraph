@@ -1,0 +1,36 @@
+schema: spec-driven
+
+context: |
+  Tech stack: Python 3.12, FastMCP (MCP server for agents)
+  Architecture: MCP server exposing a tool that scans a directory path and
+    returns the file/folder hierarchy (map of folders, subfolders, and files
+    at file level — common file types like jpg, png, docx; not code-level)
+  Testing: pytest (not yet installed — pending project setup)
+  Style: TBD (no source yet)
+
+rules:
+  proposal:
+    - Include a rollback plan for risky changes
+    - Ask the user before splitting a change into smaller pieces (user works interactively)
+    - Flag changes whose diff exceeds ~400 lines for splitting (chained-pr threshold)
+  specs:
+    - Use Given/When/Then for scenarios
+    - Use RFC 2119 keywords (MUST, SHALL, SHOULD, MAY)
+  design:
+    - Include sequence diagrams for complex flows
+    - Document architecture decisions with rationale
+  tasks:
+    - Group by phase, use hierarchical numbering
+    - Keep tasks completable in one session
+    - Ask the user before splitting tasks that exceed ~400 lines
+  apply:
+    guidelines:
+      - Follow existing code patterns
+    tdd: false            # no test runner installed yet; enable after pytest setup
+    test_command: ""      # pending: "pytest" once dev deps are installed
+  verify:
+    test_command: ""      # pending: "pytest"
+    build_command: ""
+    coverage_threshold: 0
+  archive:
+    - Warn before merging destructive deltas
