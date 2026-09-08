@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # install.sh — One-liner installer for graph MCP server
-# Usage: curl -fsSL https://raw.githubusercontent.com/TU_USUARIO/graph/main/install.sh | bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/nahuelhollmann109/filegraph/main/install.sh | bash
 set -euo pipefail
 
 # ─── Config ──────────────────────────────────────────────────────────────────
-REPO_URL="https://github.com/TU_USUARIO/filegraph.git"
+REPO_URL="https://github.com/nahuelhollmann109/filegraph.git"
 INSTALL_DIR="${HOME}/.local/share/filegraph"
 SERVER_NAME="filegraph"
 

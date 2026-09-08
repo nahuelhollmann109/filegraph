@@ -19,7 +19,7 @@ filegraph se integra directamente con MCP (Model Context Protocol) para que agen
 ### Instalación rápida (recomendado)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/TU_USUARIO/filegraph/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/nahuelhollmann109/filegraph/main/install.sh | bash
 ```
 
 Esto clona el repo en `~/.local/share/filegraph`, instala dependencias, y configura OpenCode automáticamente.
@@ -27,7 +27,7 @@ Esto clona el repo en `~/.local/share/filegraph`, instala dependencias, y config
 ### Instalación manual
 
 ```bash
-git clone https://github.com/TU_USUARIO/filegraph.git
+git clone https://github.com/nahuelhollmann109/filegraph.git
 cd filegraph
 pip install -e ".[dev]"
 ./scripts/setup-mcp.sh install
