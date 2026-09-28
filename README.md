@@ -22,15 +22,37 @@ filegraph se integra directamente con MCP (Model Context Protocol) para que agen
 curl -fsSL https://raw.githubusercontent.com/nahuelhollmann109/filegraph/main/install.sh | bash
 ```
 
-Esto clona el repo en `~/.local/share/filegraph`, instala dependencias, y configura OpenCode automáticamente.
+### Qué hace el instalador
+
+1. Muestra un **resumen de todo lo que va a hacer** antes de cambiar nada (con `--dry-run` lo podés ver sin ejecutar ninguna acción).
+2. Clona o actualiza el repo en `~/.local/share/filegraph`.
+3. Instala las dependencias Python con la primera estrategia que funcione: `uv` ya instalado → venv del sistema → `pip` del sistema → **bootstrap de uv en user-space** (descarga el binario fijado de su release oficial y verifica el checksum).
+4. Detecta tu config de OpenCode (`$OPENCODE_CONFIG`, `opencode.json` o `opencode.jsonc`), crea un **backup una sola vez** (`<config>.filegraph.bak`) y registra el MCP con la ruta **absoluta** del intérprete con el que instaló las deps.
+5. Corre un **smoke test** (el server tiene que arrancar) antes de anunciar éxito. Si algo falla, lo dice con la causa y la solución — nunca reporta éxito falso.
+
+Todo pasa dentro de su directorio de instalación: **sin sudo, sin paquetes del sistema, sin tocar tus profiles de shell ni tu PATH**. El comando `uninstall` revierte todo lo creado.
+
+### Requisitos
+
+- `git`, `jq` y `python3` (≥ 3.12). Si falta alguno, el instalador imprime el comando exacto para tu distro (apt/dnf/yum/pacman/zypper/apk).
+- No hace falta `pip` ni `python3-venv`: si el sistema no tiene ningún instalador usable, el instalador se trae su propio `uv`.
+
+### Variables y opciones
+
+| Variable / flag | Qué hace |
+|-----------------|----------|
+| `--dry-run` | Solo imprime el resumen de acciones; no cambia nada |
+| `OPENCODE_CONFIG` | Ruta explícita a la config de OpenCode (si el archivo existe, tiene prioridad; si no, se detecta `.json`/`.jsonc`) |
+| `FILEGRAPH_INSTALL_DIR` | Cambia el directorio de instalación (default: `~/.local/share/filegraph`) |
+| `FILEGRAPH_PYTHON` / `--python <path>` | Intérprete que registra `setup-mcp.sh` (default: el que instaló las deps) |
 
 ### Instalación manual
 
 ```bash
 git clone https://github.com/nahuelhollmann109/filegraph.git
 cd filegraph
-pip install -e ".[dev]"
-./scripts/setup-mcp.sh install
+python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
+FILEGRAPH_PYTHON="$PWD/.venv/bin/python" ./scripts/setup-mcp.sh install
 ```
 
 ### Desinstalar
@@ -43,21 +65,25 @@ bash ~/.local/share/filegraph/install.sh uninstall
 ./scripts/setup-mcp.sh uninstall
 ```
 
+Elimina el server de OpenCode y borra todo su directorio de instalación (repo, venv y uv). El backup `<config>.filegraph.bak` se conserva a propósito.
+
 ## Configurar en un cliente MCP
 
-Agregar esta configuración a tu cliente MCP (OpenCode, Claude Desktop, etc.):
+Agregar esta configuración a tu cliente MCP (Claude Desktop, etc.). Usá siempre la ruta **absoluta** del intérprete — los clientes MCP no heredan tu PATH ni un venv activo:
 
 ```json
 {
   "mcpServers": {
     "filegraph": {
-      "command": "python",
+      "command": "/ruta/a/filegraph/.venv/bin/python",
       "args": ["-m", "src.main"],
       "cwd": "/ruta/a/filegraph"
     }
   }
 }
 ```
+
+Si instalaste con curl, la ruta exacta aparece al final del instalador.
 
 ## Tools de escaneo
 
