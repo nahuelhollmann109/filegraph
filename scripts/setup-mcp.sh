@@ -220,6 +220,20 @@ cmd_install() {
   local interpreter
   interpreter="$(resolve_python)" || exit 1
 
+  # Keep the pristine original before the first write, so a bad rewrite is
+  # recoverable. Only ever created once: a later install must not overwrite the
+  # original with an already-modified config.
+  local backup="${OPENCODE_CONFIG}.filegraph.bak"
+  if [[ ! -e "${backup}" ]]; then
+    cp -p "$OPENCODE_CONFIG" "$backup" || {
+      echo "Error: could not create backup ${backup}" >&2
+      exit 1
+    }
+    echo "Backup: ${backup}"
+  else
+    echo "Backup already exists, keeping it: ${backup}"
+  fi
+
   # Build the new config in a temp file created NEXT TO the target, so the final
   # rename stays on one filesystem and is therefore atomic. A plain `cp` can
   # truncate the user's config if it is interrupted mid-write.

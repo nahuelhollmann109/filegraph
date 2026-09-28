@@ -9,14 +9,33 @@ export GIT_TERMINAL_PROMPT=0
 
 # ─── Config ──────────────────────────────────────────────────────────────────
 REPO_URL="https://github.com/nahuelhollmann109/filegraph.git"
-INSTALL_DIR="${HOME}/.local/share/filegraph"
+# Overridable so a test run (or a user with a different layout) can redirect the
+# whole installation. Unset keeps the historical location.
+INSTALL_DIR="${FILEGRAPH_INSTALL_DIR:-${HOME}/.local/share/filegraph}"
+# ONE venv location, shared by every tier: system uv, stdlib venv, bootstrapped
+# uv. Tier 2 and Tier 4 must not create competing environments.
 VENV_DIR="${INSTALL_DIR}/.venv"
+# Tier 4 user-space bootstrap. Pinned so an install is reproducible.
+UV_VERSION="0.12.20"
+UV_BIN_DIR="${INSTALL_DIR}/.uv/bin"
+UV_BIN="${UV_BIN_DIR}/uv"
 SERVER_NAME="filegraph"
 # Pre-set by the caller; also the value check_opencode() resolves and exports.
+# An explicit value is authoritative: we must never silently register into a
+# different file than the one the caller asked for.
 OPENCODE_CONFIG="${OPENCODE_CONFIG:-}"
+OPENCODE_CONFIG_EXPLICIT=0
+[[ -n "${OPENCODE_CONFIG}" ]] && OPENCODE_CONFIG_EXPLICIT=1
 # Absolute path of the interpreter that will run the MCP server. Set by
 # install_python_deps() and handed to setup-mcp.sh.
 CHOSEN_PYTHON=""
+# Why the last tier failed, so the final error can name the failing step
+# instead of just "it did not work".
+BOOTSTRAP_REASON=""
+# Why the post-install smoke test failed, for the same reason.
+SMOKE_REASON=""
+# `--dry-run`: print the plan and stop before any mutation.
+DRY_RUN=0
 
 # ─── Colors ──────────────────────────────────────────────────────────────────
 RED='\033[0;31m'
@@ -94,12 +113,25 @@ check_deps() {
 # identically, so both scripts can never target different files.
 check_opencode() {
   local candidate
+
+  # An explicit OPENCODE_CONFIG is taken literally, even when the file is
+  # missing: falling back to a discovered config would write somewhere the
+  # caller did not ask for.
+  if [[ "${OPENCODE_CONFIG_EXPLICIT}" -eq 1 ]]; then
+    if [[ -f "${OPENCODE_CONFIG}" ]]; then
+      return 0
+    fi
+    warn "OpenCode config not found at ${OPENCODE_CONFIG}"
+    warn "Create it by running \`opencode\` once, then re-run this script to register the MCP server."
+    warn "The MCP server will be installed, but OpenCode will not know about it yet."
+    return 1
+  fi
+
   for candidate in \
-    "${OPENCODE_CONFIG}" \
     "${HOME}/.config/opencode/opencode.json" \
     "${HOME}/.config/opencode/opencode.jsonc"
   do
-    if [[ -n "${candidate}" ]] && [[ -f "${candidate}" ]]; then
+    if [[ -f "${candidate}" ]]; then
       OPENCODE_CONFIG="${candidate}"
       return 0
     fi
@@ -182,6 +214,164 @@ venv_python() {
   return 1
 }
 
+# ─── Tier 4: user-space uv bootstrap ──────────────────────────────────────────
+# When the host has no uv, no ensurepip and no pip, download the pinned uv
+# release ourselves. Design constraints, deliberately:
+#   * binary download only — we never pipe a remote script into a shell
+#   * the published .sha256 asset MUST match before anything is extracted
+#   * everything lands under INSTALL_DIR: no sudo, no PATH edits, no profile
+#     edits, and no system package installs
+uv_arch() {
+  case "$(uname -m)" in
+    x86_64|amd64)  echo "x86_64" ;;
+    aarch64|arm64) echo "aarch64" ;;
+    *)             echo "" ;;
+  esac
+}
+
+# sha256 of a file, or nothing when no hasher is available.
+sha256_of() {
+  if command -v sha256sum &>/dev/null; then
+    sha256sum "$1" 2>/dev/null | cut -d' ' -f1
+  elif command -v shasum &>/dev/null; then
+    shasum -a 256 "$1" 2>/dev/null | cut -d' ' -f1
+  else
+    echo ""
+  fi
+}
+
+# Expected hash from a published checksum asset. Handles the sha256sum layout
+# ("<hash>  <name>") and the BSD one ("SHA256 (<name>) = <hash>").
+extract_sha256() {
+  local line
+  line="$(head -1 "$1" 2>/dev/null)" || return 1
+
+  if [[ "${line}" =~ ^([0-9a-fA-F]{64})([[:space:]]|$) ]]; then
+    printf '%s' "${BASH_REMATCH[1]}"
+    return 0
+  fi
+  if [[ "${line}" =~ ([0-9a-fA-F]{64})[[:space:]]*$ ]]; then
+    printf '%s' "${BASH_REMATCH[1]}"
+    return 0
+  fi
+  return 1
+}
+
+# Fetch, verify and install the pinned uv binary into ${UV_BIN}.
+# On failure, BOOTSTRAP_REASON names the step that broke. Nothing is extracted
+# unless the checksum matched, and a failed download leaves no partial binary.
+bootstrap_uv() {
+  BOOTSTRAP_REASON=""
+  local arch tarball base_url tmp expected actual extracted
+
+  arch="$(uv_arch)"
+  if [[ -z "${arch}" ]]; then
+    BOOTSTRAP_REASON="uv has no release for this architecture ($(uname -m)); only x86_64 and aarch64 are supported"
+    return 1
+  fi
+
+  if ! command -v curl &>/dev/null; then
+    BOOTSTRAP_REASON="curl is not installed, so the uv download cannot start"
+    return 1
+  fi
+
+  tarball="uv-${arch}-unknown-linux-gnu.tar.gz"
+  base_url="https://github.com/astral-sh/uv/releases/download/${UV_VERSION}"
+
+  # Reuse a previous bootstrap only when it is exactly the pinned version.
+  # `uv --version` prints "uv 0.12.20 (x86_64-unknown-linux-gnu)", so compare
+  # the first two fields rather than the whole line.
+  if [[ -x "${UV_BIN}" ]]; then
+    local have reported
+    have="$("${UV_BIN}" --version 2>/dev/null | head -1)"
+    reported="$(echo "${have}" | awk '{print $1" "$2}')"
+    if [[ "${reported}" == "uv ${UV_VERSION}" ]]; then
+      info "Reusing uv ${UV_VERSION} from ${UV_BIN}"
+    else
+      info "Replacing uv bootstrap (${have:-unusable} -> uv ${UV_VERSION})..."
+      rm -f "${UV_BIN}"
+    fi
+  fi
+
+  if [[ ! -x "${UV_BIN}" ]]; then
+    tmp="$(mktemp -d)" || { BOOTSTRAP_REASON="could not create a temporary directory"; return 1; }
+    # shellcheck disable=SC2064  # expand ${tmp} now, not at trap time
+    trap "rm -rf '${tmp}'" RETURN
+
+    info "Downloading uv ${UV_VERSION} for ${arch}..."
+    if ! curl -fsSL --connect-timeout 10 --max-time 300 \
+         -o "${tmp}/${tarball}" "${base_url}/${tarball}"; then
+      BOOTSTRAP_REASON="could not download ${base_url}/${tarball}"
+      return 1
+    fi
+    if ! curl -fsSL --connect-timeout 10 --max-time 60 \
+         -o "${tmp}/${tarball}.sha256" "${base_url}/${tarball}.sha256"; then
+      BOOTSTRAP_REASON="could not download the checksum asset ${tarball}.sha256"
+      return 1
+    fi
+
+    expected="$(extract_sha256 "${tmp}/${tarball}.sha256" || true)"
+    if [[ -z "${expected}" ]]; then
+      BOOTSTRAP_REASON="the downloaded checksum asset is unreadable"
+      return 1
+    fi
+    actual="$(sha256_of "${tmp}/${tarball}")"
+    if [[ -z "${actual}" ]]; then
+      BOOTSTRAP_REASON="no sha256 tool available to verify the download"
+      return 1
+    fi
+    if [[ "${expected}" != "${actual}" ]]; then
+      BOOTSTRAP_REASON="checksum mismatch for ${tarball}: expected ${expected}, got ${actual}"
+      return 1
+    fi
+    info "Checksum verified: ${actual}"
+
+    if ! tar -xzf "${tmp}/${tarball}" -C "${tmp}" 2>/dev/null; then
+      BOOTSTRAP_REASON="could not extract ${tarball} (the download is corrupt)"
+      return 1
+    fi
+    # The release archive holds uv-<arch>-unknown-linux-gnu/uv; locate it rather
+    # than hardcoding the layout.
+    extracted="$(find "${tmp}" -type f -name uv -perm -u+x 2>/dev/null | head -1)"
+    if [[ -z "${extracted}" ]]; then
+      BOOTSTRAP_REASON="the ${tarball} archive did not contain a 'uv' binary"
+      return 1
+    fi
+
+    mkdir -p "${UV_BIN_DIR}"
+    cp -f "${extracted}" "${UV_BIN}"
+    chmod +x "${UV_BIN}"
+  fi
+
+  # Prefer a compatible system interpreter; ask uv for a managed 3.12 only if
+  # the host has none. uv keeps managed interpreters in its own data dir, so
+  # this stays entirely in user space.
+  info "Creating virtual environment at ${VENV_DIR} with uv..."
+  if "${UV_BIN}" venv --clear "${VENV_DIR}" &>/dev/null; then
+    :
+  elif "${UV_BIN}" venv --clear --python 3.12 "${VENV_DIR}" &>/dev/null; then
+    info "No compatible system Python found — uv downloaded a managed Python 3.12."
+  else
+    BOOTSTRAP_REASON="uv could not create a virtual environment at ${VENV_DIR}"
+    return 1
+  fi
+
+  local vpy out
+  vpy="$(venv_python || true)"
+  if [[ -z "${vpy}" ]]; then
+    BOOTSTRAP_REASON="uv created ${VENV_DIR} but it has no usable interpreter"
+    return 1
+  fi
+
+  if ! out="$("${UV_BIN}" pip install --python "${vpy}" -e "${INSTALL_DIR}/.[dev]" 2>&1)"; then
+    BOOTSTRAP_REASON="uv could not install the project dependencies: ${out##*: }"
+    return 1
+  fi
+
+  CHOSEN_PYTHON="${vpy}"
+  return 0
+}
+
 install_python_deps() {
   local vpy
 
@@ -249,6 +439,80 @@ install_python_deps() {
     return 1
   done
 
+  # 4 — no usable local tooling at all: fetch a pinned, checksum-verified uv
+  # into INSTALL_DIR and let it do the work. Still no sudo and no system changes.
+  info "No usable Python installer found — bootstrapping uv ${UV_VERSION} in ${INSTALL_DIR}..."
+  if bootstrap_uv; then
+    info "Bootstrapped uv: $( "${UV_BIN}" --version 2>/dev/null | head -1 )"
+    return 0
+  fi
+
+  return 1
+}
+
+# ─── Plan and verification ────────────────────────────────────────────────────
+# Printed after config detection and before any mutation, so the user can see
+# exactly what will happen while it is still harmless to abort.
+print_action_summary() {
+  local opencode_ready="$1"
+
+  echo ""
+  echo "  This will do the following, all inside ${INSTALL_DIR}:"
+  echo "    * clone or update the filegraph repository"
+  echo "    * create a Python virtual environment at ${VENV_DIR}"
+  if command -v uv &>/dev/null; then
+    echo "    * use the uv already on your PATH (${UV_BIN_DIR} not needed)"
+  else
+    echo "    * download a pinned, checksum-verified uv ${UV_VERSION} to ${UV_BIN_DIR}"
+    echo "      only if no local uv, venv, or pip can do the job"
+  fi
+
+  if [[ "${opencode_ready}" -eq 1 ]]; then
+    echo ""
+    echo "  OpenCode config to register: ${OPENCODE_CONFIG}"
+  else
+    echo ""
+    echo "  OpenCode config: SKIPPED — ${OPENCODE_CONFIG} does not exist yet."
+    echo "    Run \`opencode\` once to create it, then re-run this script."
+  fi
+
+  echo ""
+  echo "  No system packages, shell profiles, or other files will be touched."
+  echo "  Nothing needs sudo, and nothing will ask you a question."
+  echo ""
+}
+
+# Prove the installed interpreter can actually load the server before claiming
+# success. Runs in a subshell with cwd=${INSTALL_DIR} (the MCP entry uses that
+# same cwd) and under `timeout`, so a module that starts a server on import can
+# never hang the installer and no background process is left behind.
+smoke_test() {
+  SMOKE_REASON=""
+
+  if [[ ! -f "${INSTALL_DIR}/src/main.py" ]]; then
+    SMOKE_REASON="src/main.py is missing from ${INSTALL_DIR}"
+    return 1
+  fi
+
+  # `timeout` is coreutils on Linux; without it, still run the check uncapped.
+  local cap=""
+  if command -v timeout &>/dev/null; then
+    cap="timeout 15"
+  fi
+
+  # src/main.py only calls mcp.run() under `if __name__ == "__main__"`, so
+  # importing it exercises the real startup path without starting a server.
+  if ( cd "${INSTALL_DIR}" && ${cap} "${CHOSEN_PYTHON}" -c "import src.main" ) &>/dev/null; then
+    return 0
+  fi
+
+  # If the deps import but the module does not, say so precisely.
+  if ( cd "${INSTALL_DIR}" && ${cap} "${CHOSEN_PYTHON}" -c "import fastmcp" ) &>/dev/null; then
+    SMOKE_REASON="the dependencies import, but \`import src.main\` failed — run it by hand to see why:\n      (cd '${INSTALL_DIR}' && '${CHOSEN_PYTHON}' -c 'import src.main')"
+    return 1
+  fi
+
+  SMOKE_REASON="'${CHOSEN_PYTHON}' cannot import fastmcp — the dependencies were not installed into that interpreter"
   return 1
 }
 
@@ -263,6 +527,20 @@ do_install() {
   check_deps
   info "Dependencies OK (git, python3, jq)"
 
+  # Resolve the config file BEFORE any mutation so the plan can name it, and so
+  # check_opencode's warning appears while aborting is still free.
+  local opencode_ready=0
+  if check_opencode; then
+    opencode_ready=1
+  fi
+
+  print_action_summary "${opencode_ready}"
+
+  if [[ "${DRY_RUN}" -ne 0 ]]; then
+    info "Dry run — nothing was changed."
+    return 0
+  fi
+
   # Clone or update repo
   if [[ -d "${INSTALL_DIR}" ]]; then
     info "Repository already exists at ${INSTALL_DIR}"
@@ -274,7 +552,7 @@ do_install() {
   fi
 
   # Install Python dependencies
-  install_python_deps || error "Could not install the Python dependencies from ${INSTALL_DIR}\n  Tried: uv -> python3 -m venv -> pip --break-system-packages.\n  None of those strategies worked. On most distros one package fixes it:\n    $(python_tooling_hint)\n  Or install the project by hand once pip is available:\n    python3 -m pip install -e '${INSTALL_DIR}/.[dev]'"
+  install_python_deps || error "Could not install the Python dependencies from ${INSTALL_DIR}\n  Tried: uv -> python3 -m venv -> pip --break-system-packages -> bootstrapped uv.\n  Last failure: ${BOOTSTRAP_REASON:-no strategy reported a reason}\n  Fix the reported step and re-run, or install by hand once pip is available:\n    $(python_tooling_hint)"
   info "Python dependencies installed (interpreter: ${CHOSEN_PYTHON})"
 
   # Install MCP server in OpenCode.
@@ -283,7 +561,7 @@ do_install() {
   # must not abort us before the summary. Capture it, print everything, and exit
   # non-zero at the very end so the two outcomes stay visibly distinct.
   local registration_failed=0
-  if check_opencode; then
+  if [[ "${opencode_ready}" -eq 1 ]]; then
     info "Installing MCP server in OpenCode..."
     if ! OPENCODE_CONFIG="${OPENCODE_CONFIG}" FILEGRAPH_PYTHON="${CHOSEN_PYTHON}" \
          bash "${INSTALL_DIR}/scripts/setup-mcp.sh" install; then
@@ -293,8 +571,39 @@ do_install() {
     registration_failed=1
   fi
 
+  # ── Verification ───────────────────────────────────────────────────────────
+  local smoke_failed=0
+  local config_key_missing=0
+
+  info "Verifying the installation..."
+  if ! smoke_test; then
+    smoke_failed=1
+    warn "Smoke test failed: ${SMOKE_REASON}"
+  else
+    info "Smoke test passed (the interpreter imports src.main)"
+  fi
+
+  if [[ "${registration_failed}" -eq 0 ]]; then
+    if ! jq -e ".mcp.${SERVER_NAME}" "$OPENCODE_CONFIG" &>/dev/null; then
+      config_key_missing=1
+      warn "The MCP entry '.mcp.${SERVER_NAME}' is not present in ${OPENCODE_CONFIG}"
+    else
+      info "OpenCode config contains the '${SERVER_NAME}' entry"
+    fi
+  fi
+
+  # One clear status block, then a non-zero exit only for a real failure.
+  local failed=0
+  [[ "${smoke_failed}" -ne 0 ]] && failed=1
+  [[ "${registration_failed}" -ne 0 ]] && failed=1
+  [[ "${config_key_missing}" -ne 0 ]] && failed=1
+
   echo ""
-  info "Installation complete!"
+  if [[ "${failed}" -eq 0 ]]; then
+    info "Installation complete!"
+  else
+    warn "Installation did NOT fully complete."
+  fi
   echo ""
   echo "  Next steps:"
   echo "    1. Restart OpenCode to load the MCP server"
@@ -313,12 +622,18 @@ do_install() {
     echo "  OpenCode config: ${OPENCODE_CONFIG}"
   fi
 
+  if [[ "${config_key_missing}" -ne 0 ]]; then
+    echo ""
+    warn "The config file does not actually contain '.mcp.${SERVER_NAME}'."
+    warn "  Check the file by hand:  jq '.mcp' '${OPENCODE_CONFIG}'"
+  fi
+
   echo ""
   echo "  To uninstall: bash ${INSTALL_DIR}/scripts/setup-mcp.sh uninstall"
   echo ""
 
   # Signal the partial outcome only after the summary is on screen.
-  if [[ "${registration_failed}" -ne 0 ]]; then
+  if [[ "${failed}" -ne 0 ]]; then
     exit 1
   fi
 }
@@ -345,16 +660,34 @@ do_uninstall() {
 # ─── Main ────────────────────────────────────────────────────────────────────
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [install|uninstall]
+Usage: $(basename "$0") [install|uninstall] [--dry-run]
 
 Commands:
   install     Install filegraph MCP server (default)
   uninstall   Remove filegraph MCP server
 
+Options:
+  --dry-run   Print the plan and exit without changing anything
+
+Environment:
+  FILEGRAPH_INSTALL_DIR  Install location (default: ~/.local/share/filegraph)
+  OPENCODE_CONFIG        OpenCode config to register (default: auto-detected)
+
 EOF
 }
 
-case "${1:-install}" in
+# Accept the command in any position so `install --dry-run` and `--dry-run`
+# behave the same. Unknown flags still fail loudly.
+COMMAND=""
+for arg in "$@"; do
+  case "${arg}" in
+    --dry-run) DRY_RUN=1 ;;
+    -*)       echo "Error: unknown option '${arg}'" >&2; usage; exit 1 ;;
+    *)        [[ -n "${COMMAND}" ]] || COMMAND="${arg}" ;;
+  esac
+done
+
+case "${COMMAND:-install}" in
   install)   do_install ;;
   uninstall) do_uninstall ;;
   *)         usage; exit 1 ;;
