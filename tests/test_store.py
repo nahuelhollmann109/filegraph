@@ -20,6 +20,11 @@ from src.store import (
 
 
 # ---------------------------------------------------------------------------
+# Schema recovery tests
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
 # init_db tests
 # ---------------------------------------------------------------------------
 
@@ -250,3 +255,31 @@ class TestCacheStats:
         stats = cache_stats(tmp_path)
         assert stats["entries"] == 2
         assert stats["total_files"] == 3
+
+
+class TestSchemaRecovery:
+    """A cache.db that exists without its schema must be repaired, not fatal."""
+
+    def test_cache_stats_recovers_from_empty_db(self, tmp_path: Path) -> None:
+        """An empty cache.db is repaired instead of raising no such table."""
+        (tmp_path / ".filegraph").mkdir()
+        (tmp_path / ".filegraph" / "cache.db").write_bytes(b"")
+
+        stats = cache_stats(tmp_path)
+
+        assert stats["entries"] == 0
+        assert stats["total_files"] == 0
+
+    def test_recovers_from_db_without_cache_table(self, tmp_path: Path) -> None:
+        """A cache.db holding an unrelated table is repaired too."""
+        (tmp_path / ".filegraph").mkdir()
+        conn = sqlite3.connect(str(tmp_path / ".filegraph" / "cache.db"))
+        conn.execute("CREATE TABLE unrelated (id INTEGER)")
+        conn.commit()
+        conn.close()
+
+        set_cache(tmp_path, "k1", "t", "/a", json.dumps({}), [("/a.txt", 1.0)])
+        stats = cache_stats(tmp_path)
+
+        assert stats["entries"] == 1
+        assert stats["total_files"] == 1

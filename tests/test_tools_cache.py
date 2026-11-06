@@ -160,3 +160,30 @@ class TestFindPatternsCache:
         r2 = find_patterns(str(tmp_path))
         # Should detect pattern with 5 files now
         assert r2.get("patterns") is not None
+
+
+class TestEmptyCacheDbRecovery:
+    """A leftover cache.db without schema must not break cache-backed tools."""
+
+    def test_find_patterns_survives_empty_cache_db(self, tmp_path: Path) -> None:
+        """The tool returns the live scan result and repairs the cache."""
+        (tmp_path / ".filegraph").mkdir()
+        (tmp_path / ".filegraph" / "cache.db").write_bytes(b"")
+        for i in range(3):
+            (tmp_path / f"a{i}.svg").write_text("x")
+
+        first = find_patterns(str(tmp_path))
+
+        assert len(first["patterns"]) >= 1
+        # The cache is usable afterwards: the second call returns the same result
+        assert find_patterns(str(tmp_path)) == first
+
+    def test_scan_directory_survives_empty_cache_db(self, tmp_path: Path) -> None:
+        """A different cache-backed tool recovers from the same broken state."""
+        (tmp_path / ".filegraph").mkdir()
+        (tmp_path / ".filegraph" / "cache.db").write_bytes(b"")
+        (tmp_path / "a.txt").write_text("hello")
+
+        result = scan_directory(str(tmp_path))
+
+        assert result["tree"]["name"] == tmp_path.name

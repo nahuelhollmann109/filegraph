@@ -16,21 +16,10 @@ def _get_db_path(project_root: Path) -> Path:
     return project_root / _DB_DIR / _DB_NAME
 
 
-def init_db(project_root: Path) -> None:
-    """Create the cache database with schema and WAL mode.
-
-    Args:
-        project_root: Root directory of the project (where .filegraph/ is created).
-    """
-    db_path = _get_db_path(project_root)
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-
-    conn = sqlite3.connect(str(db_path))
-    try:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA foreign_keys=ON")
-
-        conn.executescript("""
+# Schema is applied on demand: a cache.db that exists without its tables (an
+# interrupted init, a zero-byte leftover, or a file created by another tool)
+# must be repaired instead of failing every query forever.
+_SCHEMA_SQL = """
             CREATE TABLE IF NOT EXISTS cache (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 cache_key   TEXT UNIQUE NOT NULL,
@@ -53,11 +42,9 @@ def init_db(project_root: Path) -> None:
             );
 
             CREATE INDEX IF NOT EXISTS idx_cache_files_key ON cache_files(cache_key);
-        """)
+        """
 
-        # Try to create FTS5 virtual table; fall back gracefully if unavailable
-        try:
-            conn.executescript("""
+_FTS_SCHEMA_SQL = """
                 CREATE VIRTUAL TABLE IF NOT EXISTS cache_fts USING fts5(
                     file_path,
                     content=cache_files,
@@ -69,24 +56,63 @@ def init_db(project_root: Path) -> None:
                 CREATE TRIGGER IF NOT EXISTS cache_files_ad AFTER DELETE ON cache_files BEGIN
                     INSERT INTO cache_fts(cache_fts, rowid, file_path) VALUES('delete', old.id, old.file_path);
                 END;
-            """)
-        except sqlite3.OperationalError:
-            # FTS5 not available — LIKE fallback will be used
-            pass
+        """
 
-        conn.commit()
+
+def _apply_schema(conn: sqlite3.Connection) -> None:
+    """Create tables, indexes and FTS on an open connection. Idempotent."""
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.executescript(_SCHEMA_SQL)
+
+    # Try to create FTS5 virtual table; fall back gracefully if unavailable
+    try:
+        conn.executescript(_FTS_SCHEMA_SQL)
+    except sqlite3.OperationalError:
+        # FTS5 not available — LIKE fallback will be used
+        pass
+
+    conn.commit()
+
+
+def _has_schema(conn: sqlite3.Connection) -> bool:
+    """Return True when the cache table already exists."""
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='cache'"
+    ).fetchone()
+    return row is not None
+
+
+def init_db(project_root: Path) -> None:
+    """Create the cache database with schema and WAL mode.
+
+    Args:
+        project_root: Root directory of the project (where .filegraph/ is created).
+    """
+    db_path = _get_db_path(project_root)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        _apply_schema(conn)
     finally:
         conn.close()
 
 
 def _connect(project_root: Path) -> sqlite3.Connection:
-    """Open a connection to the cache database, initializing if needed."""
+    """Open a connection to the cache database, repairing the schema if needed."""
     db_path = _get_db_path(project_root)
-    if not db_path.exists():
-        init_db(project_root)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+
     conn = sqlite3.connect(str(db_path))
-    conn.execute("PRAGMA foreign_keys=ON")
     conn.row_factory = sqlite3.Row
+    try:
+        if not _has_schema(conn):
+            _apply_schema(conn)
+        conn.execute("PRAGMA foreign_keys=ON")
+    except Exception:
+        conn.close()
+        raise
     return conn
 
 

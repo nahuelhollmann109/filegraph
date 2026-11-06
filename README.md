@@ -85,6 +85,46 @@ Agregar esta configuración a tu cliente MCP (Claude Desktop, etc.). Usá siempr
 
 Si instalaste con curl, la ruta exacta aparece al final del instalador.
 
+### Pi
+
+Pi lee los servers de `~/.pi/agent/mcp.json` (global) o de `.pi/mcp.json` en el
+proyecto. Ojo con un detalle: el `exposure` por defecto es `codemode`, que **no**
+declara las tools al modelo — quedan alcanzables solo desde scripts de codemode.
+Para que aparezcan como herramientas normales hay que pedir `direct`.
+
+```bash
+pi mcp add filegraph \
+  --cwd /ruta/a/filegraph \
+  --exposure direct \
+  --description "Directory scanning: directory trees, search by extension, duplicate files by hash, naming patterns, file metadata, and a SQLite scan cache" \
+  -- /ruta/a/filegraph/.venv/bin/python -m src.main
+```
+
+La entrada que queda escrita es esta:
+
+```json
+{
+  "mcpServers": {
+    "filegraph": {
+      "command": "/ruta/a/filegraph/.venv/bin/python",
+      "args": ["-m", "src.main"],
+      "cwd": "/ruta/a/filegraph",
+      "exposure": "direct",
+      "description": "Directory scanning: directory trees, search by extension, duplicate files by hash, naming patterns, file metadata, and a SQLite scan cache"
+    }
+  }
+}
+```
+
+`command` es **un ejecutable**, no una cadena de shell: de ahí la ruta absoluta
+del intérprete y los argumentos por separado.
+
+Para verificar, `pi mcp list` imprime el estado y la cantidad de tools de cada
+server, y sale con código 1 si alguno habilitado no conecta. Si editaste el
+archivo con Pi ya abierto, corré `/reload` en la sesión. Las tools quedan
+disponibles como `mcp__filegraph__scan_directory`,
+`mcp__filegraph__find_duplicates`, etc.
+
 ## Tools de escaneo
 
 ### `scan_directory`

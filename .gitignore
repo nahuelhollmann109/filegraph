@@ -1,6 +1,9 @@
 # Local AI runtime state
 .atl/
 
+# filegraph scan cache
+.filegraph/
+
 # Python
 __pycache__/
 *.py[cod]
