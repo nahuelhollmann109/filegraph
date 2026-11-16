@@ -87,7 +87,13 @@ Updating the existing FileGraph MCP server entry.
 Si ya coincide, no toca nada. El backup `<config>.filegraph.bak` se crea **una
 sola vez** y nunca se sobrescribe, así que el original prístino queda intacto por
 más reinstalaciones que hagas. `./scripts/setup-mcp.sh status` avisa cuando la
-entrada registrada arranca un módulo distinto al de esta versión.
+entrada registrada arranca un módulo distinto al de esta versión, o cuando su
+`command` no tiene la forma esperada.
+
+Si editaste la entrada a mano y `command` quedó como texto en vez de array
+(`"command": "python3 -m src.main"`), el instalador también la repara: te muestra
+el valor que encontró y la reescribe como `[intérprete, -m, módulo]`. Los demás
+campos de la entrada (`env`, `enabled`, `description`, …) se conservan.
 
 ### Si tu entrada todavía dice `-m src.main`
 

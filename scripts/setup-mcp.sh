@@ -193,6 +193,38 @@ Environment:
 EOF
 }
 
+# ─── Entry inspection ───────────────────────────────────────────────────────
+# The entry's `command` is an array of argv words in every shape this script
+# writes, but a hand-edited entry can hold a JSON string ("command": "python3
+# -m src.main"). jq cannot index a string: asking for `.command[2]` fails with
+# "Cannot index string with number", and under `set -e` that killed the whole
+# script — install aborted with a raw jq error instead of reaching the repair
+# path, and status died before printing anything. Every read of the entry goes
+# through these helpers so each shape is handled where it is expected.
+
+# Succeeds only when `command` is an array, the shape a launcher accepts.
+entry_command_is_array() {
+  jq -e --arg name "$SERVER_NAME" '(.mcp[$name].command | type) == "array"' \
+    "$OPENCODE_CONFIG" &>/dev/null
+}
+
+# The module recorded at index 2, or "" when there is no such slot (an array
+# shorter than three words, a missing command, or a command of another shape).
+entry_module() {
+  if ! entry_command_is_array; then
+    echo ""
+    return 0
+  fi
+  jq -r --arg name "$SERVER_NAME" '(.mcp[$name].command[2] // "") | tostring' \
+    "$OPENCODE_CONFIG"
+}
+
+# The recorded command rendered as compact JSON, to show what is actually there
+# when its shape is unusable. Never fails: `null` prints as `null`.
+entry_command_json() {
+  jq -c --arg name "$SERVER_NAME" '.mcp[$name].command' "$OPENCODE_CONFIG"
+}
+
 cmd_install() {
   require_jq
 
@@ -212,13 +244,20 @@ cmd_install() {
   # module name from an older release, and the server silently stopped working.
   if jq -e ".mcp.${SERVER_NAME}" "$OPENCODE_CONFIG" &>/dev/null; then
     local installed_module installed_cwd
-    installed_module="$(jq -r --arg name "$SERVER_NAME" '.mcp[$name].command[2] // ""' "$OPENCODE_CONFIG")"
+    installed_module="$(entry_module)"
     installed_cwd="$(jq -r --arg name "$SERVER_NAME" '.mcp[$name].cwd // ""' "$OPENCODE_CONFIG")"
 
     if [[ "${installed_module}" == "${MCP_MODULE}" && "${installed_cwd}" == "${PROJECT_DIR}" ]]; then
       echo "FileGraph MCP server is already installed."
       echo "Run '$(basename "$0") uninstall' first to reinstall."
       exit 0
+    fi
+
+    # A command that is not an array never matches: say what is there before
+    # rewriting it, so the repair is not silent about the malformed field.
+    if ! entry_command_is_array; then
+      echo "⚠️  The existing entry's 'command' is not an array: $(entry_command_json)"
+      echo "   Rewriting it as [interpreter, -m, module]."
     fi
 
     echo "Updating the existing FileGraph MCP server entry."
@@ -352,12 +391,19 @@ cmd_status() {
 
     # A registered entry that starts a module this version does not ship still
     # looks installed but cannot run. Say so instead of reporting plain success.
-    local installed_module
-    installed_module="$(jq -r --arg name "$SERVER_NAME" '.mcp[$name].command[2] // ""' "$OPENCODE_CONFIG")"
-    if [[ "${installed_module}" != "${MCP_MODULE}" ]]; then
+    if ! entry_command_is_array; then
       echo ""
-      echo "⚠️  The entry runs '-m ${installed_module:-<none>}', but this version expects '-m ${MCP_MODULE}'."
-      echo "   Re-run '$(basename "$0") install' to update the entry in place."
+      echo "⚠️  The entry's 'command' is not an array: $(entry_command_json)"
+      echo "   A launcher needs [interpreter, -m, ${MCP_MODULE}]."
+      echo "   Re-run '$(basename "$0") install' to rewrite the entry in place."
+    else
+      local installed_module
+      installed_module="$(entry_module)"
+      if [[ "${installed_module}" != "${MCP_MODULE}" ]]; then
+        echo ""
+        echo "⚠️  The entry runs '-m ${installed_module:-<none>}', but this version expects '-m ${MCP_MODULE}'."
+        echo "   Re-run '$(basename "$0") install' to update the entry in place."
+      fi
     fi
   else
     echo "❌ FileGraph MCP server is NOT installed."
